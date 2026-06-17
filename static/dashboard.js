@@ -8,7 +8,7 @@
 //   2. API helpers
 //   3. State rendering — update the DOM from a state payload
 //   4. Event log rendering
-//   5. Polling loop — fetch /api/state every 3 seconds
+//   5. Polling loop - fetch /api/state every 3 seconds
 //   6. Dashboard tab — alarm reset, manual refresh
 //   7. Sensors tab — rendering helper
 //   8. Test mode tab — mode switch, scenario loader, manual input apply
