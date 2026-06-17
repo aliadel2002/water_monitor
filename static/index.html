@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" />
+  <title>Water Monitor</title>
+  <style>
+    /* ==========================================================================
+       DESIGN TOKENS
+       All colors, fonts, and spacing are defined here. Change a value here
+       and it propagates everywhere — nothing is hard-coded in component styles.
+       ========================================================================== */
+    :root {
+      --bg:           #0f1117;
+      --surface:      #1a1d27;
+      --surface-2:    #22263a;
+      --border:       #2e3248;
+      --text:         #e8eaf0;
+      --text-dim:     #7a80a0;
+      --accent:       #4fc3f7;       /* pipe-water blue                  */
+      --accent-dim:   #1a3a4a;
+      --green:        #43e97b;       /* normal state                     */
+      --yellow:       #f9c74f;       /* warning state                    */
+      --red:          #f94144;       /* leak alarm / abnormal state      */
+      --font-mono:    "JetBrains Mono", "Fira Mono", "Consolas", monospace;
+      --font-body:    "Inter", "Segoe UI", system-ui, sans-serif;
+      --radius:       8px;
+      --gap:          16px;
+    }
+
+    /* ==========================================================================
+       RESET & BASE
+       ========================================================================== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family:      var(--font-body);
+      background:       var(--bg);
+      color:            var(--text);
+      min-height:       100vh;
+      font-size:        14px;
+      line-height:      1.6;
+    }
+
+    /* ==========================================================================
+       LAYOUT
+       ========================================================================== */
+    .app-shell {
+      max-width: 900px;
+      margin:    0 auto;
+      padding:   24px var(--gap);
+    }
+
+    /* --- Header --- */
+    .header {
+      display:         flex;
+      align-items:     center;
+      justify-content: space-between;
+      margin-bottom:   24px;
+      padding-bottom:  16px;
+      border-bottom:   1px solid var(--border);
+    }
+
+    .header-title {
+      font-family:  var(--font-mono);
+      font-size:    18px;
+      font-weight:  600;
+      color:        var(--accent);
+      letter-spacing: 0.04em;
+    }
+
+    .header-title span {
+      color: var(--text-dim);
+      font-weight: 400;
+    }
+
+    /* Mode badge in header */
+    .mode-badge {
+      font-family:   var(--font-mono);
+      font-size:     11px;
+      padding:       3px 10px;
+      border-radius: 20px;
+      font-weight:   600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .mode-badge.real { background: var(--accent-dim); color: var(--accent); }
+    .mode-badge.test { background: #3a2a10; color: var(--yellow); }
+
+    /* --- Tab bar --- */
+    .tabs {
+      display:       flex;
+      gap:           4px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0;
+    }
+
+    .tab-btn {
+      background:    none;
+      border:        none;
+      color:         var(--text-dim);
+      font-family:   var(--font-body);
+      font-size:     13px;
+      font-weight:   500;
+      padding:       8px 16px;
+      cursor:        pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition:    color 0.15s, border-color 0.15s;
+    }
+
+    .tab-btn:hover    { color: var(--text); }
+    .tab-btn.active   { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* Tab panels */
+    .tab-panel        { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ==========================================================================
+       CARD COMPONENT
+       A bordered surface used for grouping related information.
+       ========================================================================== */
+    .card {
+      background:    var(--surface);
+      border:        1px solid var(--border);
+      border-radius: var(--radius);
+      padding:       20px;
+      margin-bottom: var(--gap);
+    }
+
+    .card-title {
+      font-family:   var(--font-mono);
+      font-size:     11px;
+      font-weight:   600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color:         var(--text-dim);
+      margin-bottom: 16px;
+    }
+
+    /* ==========================================================================
+       METRIC COMPONENT
+       Large number with a small label underneath — used on the Dashboard tab.
+       ========================================================================== */
+    .metrics-grid {
+      display:               grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap:                   var(--gap);
+      margin-bottom:         var(--gap);
+    }
+
+    .metric {
+      background:    var(--surface-2);
+      border:        1px solid var(--border);
+      border-radius: var(--radius);
+      padding:       16px 20px;
+    }
+
+    .metric-value {
+      font-family: var(--font-mono);
+      font-size:   28px;
+      font-weight: 600;
+      color:       var(--text);
+      line-height: 1.1;
+    }
+
+    .metric-unit {
+      font-size:  12px;
+      color:      var(--text-dim);
+      margin-left: 4px;
+    }
+
+    .metric-label {
+      font-size:    11px;
+      color:        var(--text-dim);
+      margin-top:   6px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    /* ==========================================================================
+       USAGE BAR
+       Visual progress bar for daily usage vs limit.
+       ========================================================================== */
+    .usage-bar-wrap {
+      margin-bottom: var(--gap);
+    }
+
+    .usage-bar-header {
+      display:         flex;
+      justify-content: space-between;
+      font-size:       12px;
+      color:           var(--text-dim);
+      margin-bottom:   8px;
+    }
+
+    .usage-bar-track {
+      height:        10px;
+      background:    var(--surface-2);
+      border-radius: 10px;
+      overflow:      hidden;
+      border:        1px solid var(--border);
+    }
+
+    .usage-bar-fill {
+      height:        100%;
+      border-radius: 10px;
+      transition:    width 0.5s ease, background 0.3s ease;
+      background:    var(--green);
+    }
+
+    .usage-bar-fill.warning { background: var(--yellow); }
+    .usage-bar-fill.danger  { background: var(--red); }
+
+    /* ==========================================================================
+       STATE BADGE
+       Colored pill label showing the current system state.
+       ========================================================================== */
+    .state-badge {
+      display:       inline-flex;
+      align-items:   center;
+      gap:           6px;
+      font-family:   var(--font-mono);
+      font-size:     13px;
+      font-weight:   600;
+      padding:       6px 14px;
+      border-radius: 20px;
+    }
+
+    .state-badge.normal   { background: #0d2e1a; color: var(--green); }
+    .state-badge.warning  { background: #2e2310; color: var(--yellow); }
+    .state-badge.leak_alarm  { background: #2e0f10; color: var(--red); }
+    .state-badge.abnormal { background: #2e0f10; color: var(--red); }
+
+    .state-dot {
+      width:         8px;
+      height:        8px;
+      border-radius: 50%;
+      background:    currentColor;
+    }
+
+    /* Pulsing animation for alarm states */
+    .state-badge.leak_alarm .state-dot,
+    .state-badge.abnormal .state-dot {
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* ==========================================================================
+       SENSOR NODE CARDS
+       ========================================================================== */
+    .sensor-grid {
+      display:               grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap:                   var(--gap);
+    }
+
+    .sensor-card {
+      background:    var(--surface-2);
+      border:        1px solid var(--border);
+      border-radius: var(--radius);
+      padding:       14px 16px;
+    }
+
+    .sensor-card-name {
+      font-size:    12px;
+      font-weight:  600;
+      color:        var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+
+    .sensor-status {
+      font-family: var(--font-mono);
+      font-size:   13px;
+      font-weight: 600;
+    }
+
+    .sensor-status.ok           { color: var(--green); }
+    .sensor-status.wet          { color: var(--red); }
+    .sensor-status.not-connected { color: var(--text-dim); }
+
+    /* ==========================================================================
+       EVENT LOG
+       ========================================================================== */
+    .event-log {
+      font-family:  var(--font-mono);
+      font-size:    12px;
+      max-height:   220px;
+      overflow-y:   auto;
+      background:   var(--surface-2);
+      border:       1px solid var(--border);
+      border-radius: var(--radius);
+      padding:      12px;
+    }
+
+    .event-log:empty::before {
+      content: "No events yet.";
+      color:   var(--text-dim);
+    }
+
+    .event-entry {
+      display:       flex;
+      gap:           12px;
+      padding:       4px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .event-entry:last-child { border-bottom: none; }
+
+    .event-time    { color: var(--text-dim); min-width: 80px; flex-shrink: 0; }
+    .event-message { color: var(--text); }
+
+    /* ==========================================================================
+       BUTTONS
+       ========================================================================== */
+    .btn {
+      font-family:   var(--font-body);
+      font-size:     13px;
+      font-weight:   500;
+      padding:       8px 16px;
+      border-radius: var(--radius);
+      border:        1px solid var(--border);
+      cursor:        pointer;
+      transition:    background 0.15s, color 0.15s, border-color 0.15s;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color:      #0a0e14;
+      border-color: var(--accent);
+    }
+    .btn-primary:hover { background: #81d4fa; border-color: #81d4fa; }
+
+    .btn-ghost {
+      background: transparent;
+      color:      var(--text-dim);
+    }
+    .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
+
+    .btn-danger {
+      background:  transparent;
+      color:       var(--red);
+      border-color: var(--red);
+    }
+    .btn-danger:hover { background: #2e0f10; }
+
+    .btn-warning {
+      background:  transparent;
+      color:       var(--yellow);
+      border-color: var(--yellow);
+    }
+    .btn-warning:hover { background: #2e2310; }
+
+    .btn-row {
+      display: flex;
+      gap:     8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    /* ==========================================================================
+       FORM ELEMENTS — Settings and Test Mode inputs
+       ========================================================================== */
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-label {
+      display:       block;
+      font-size:     12px;
+      font-weight:   500;
+      color:         var(--text-dim);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .form-input {
+      width:         100%;
+      background:    var(--surface-2);
+      border:        1px solid var(--border);
+      border-radius: var(--radius);
+      color:         var(--text);
+      font-family:   var(--font-mono);
+      font-size:     14px;
+      padding:       8px 12px;
+      outline:       none;
+      transition:    border-color 0.15s;
+    }
+
+    .form-input:focus { border-color: var(--accent); }
+
+    .form-hint {
+      font-size:  11px;
+      color:      var(--text-dim);
+      margin-top: 4px;
+    }
+
+    /* Two-column form grid */
+    .form-grid {
+      display:               grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap:                   var(--gap);
+    }
+
+    /* Toggle / checkbox row */
+    .toggle-row {
+      display:     flex;
+      align-items: center;
+      gap:         10px;
+      margin-bottom: 10px;
+    }
+
+    .toggle-row input[type="checkbox"] {
+      width:  16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .toggle-label {
+      font-size: 13px;
+      color:     var(--text);
+      cursor:    pointer;
+    }
+
+    /* Scenario buttons */
+    .scenario-grid {
+      display:               grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap:                   8px;
+      margin-top:            12px;
+      width:                 100%;
+    }
+
+    .scenario-btn {
+      background:    var(--surface-2);
+      border:        1px solid var(--border);
+      border-radius: var(--radius);
+      color:         var(--text) !important;
+      font-family:   var(--font-body);
+      font-size:     12px;
+      font-weight:   500;
+      padding:       10px 12px;
+      cursor:        pointer;
+      text-align:    left;
+      transition:    background 0.15s, border-color 0.15s;
+      display:       block;
+      width:         100%;
+      visibility:    visible;
+      opacity:       1;
+    }
+
+    .scenario-btn:hover            { background: var(--surface); border-color: var(--accent); }
+    .scenario-btn .sc-label        { display: block; font-weight: 600; margin-bottom: 2px; color: var(--text); }
+    .scenario-btn .sc-desc         { display: block; color: var(--text-dim); font-size: 11px; }
+
+    /* ==========================================================================
+       FEEDBACK MESSAGES
+       ========================================================================== */
+    .feedback {
+      font-size:    12px;
+      padding:      8px 12px;
+      border-radius: var(--radius);
+      margin-top:   10px;
+      display:      none;
+    }
+    .feedback.success { background: #0d2e1a; color: var(--green); display: block; }
+    .feedback.error   { background: #2e0f10; color: var(--red);   display: block; }
+
+    /* ==========================================================================
+       RESPONSIVE
+       ========================================================================== */
+    @media (max-width: 480px) {
+      .metrics-grid { grid-template-columns: 1fr 1fr; }
+      .metric-value { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+<div class="app-shell">
+
+  <!-- ======================================================================
+       HEADER
+       ====================================================================== -->
+  <header class="header">
+    <div class="header-title">
+      water<span>/</span>monitor
+    </div>
+    <div id="mode-badge" class="mode-badge real">LIVE</div>
+  </header>
+
+  <!-- ======================================================================
+       TAB BAR
+       ====================================================================== -->
+  <nav class="tabs" role="tablist">
+    <button class="tab-btn active" data-tab="dashboard"  role="tab">Dashboard</button>
+    <button class="tab-btn"        data-tab="sensors"    role="tab">Sensors</button>
+    <button class="tab-btn"        data-tab="test"  role="tab">Test Mode</button>
+    <button class="tab-btn"        data-tab="settings"   role="tab">Settings</button>
+  </nav>
+
+  <!-- ======================================================================
+       TAB 1 — DASHBOARD
+       ====================================================================== -->
+  <section class="tab-panel active" id="tab-dashboard" role="tabpanel">
+
+    <!-- System state badge -->
+    <div class="card">
+      <div class="card-title">System state</div>
+      <div id="state-badge" class="state-badge normal">
+        <span class="state-dot"></span>
+        <span id="state-text">Normal</span>
+      </div>
+      <p id="state-description" style="margin-top:10px; font-size:13px; color:var(--text-dim);">
+        All sensors reading normal. No leaks detected.
+      </p>
+
+      <!-- Alarm reset button — only visible during leak_alarm state -->
+      <div id="alarm-actions" style="display:none; margin-top:14px;">
+        <button class="btn btn-danger" id="btn-reset-alarm">Reset Alarm</button>
+        <div id="reset-feedback" class="feedback"></div>
+      </div>
+    </div>
+
+    <!-- Key metrics row -->
+    <div class="metrics-grid">
+      <div class="metric">
+        <div class="metric-value">
+          <span id="flow-rate">0.0</span>
+          <span class="metric-unit">L/min</span>
+        </div>
+        <div class="metric-label">Live Flow Rate</div>
+      </div>
+      <div class="metric">
+        <div class="metric-value">
+          <span id="daily-total">0.0</span>
+          <span class="metric-unit">L</span>
+        </div>
+        <div class="metric-label">Used Today</div>
+      </div>
+      <div class="metric">
+        <div class="metric-value">
+          <span id="daily-limit-display">100</span>
+          <span class="metric-unit">L</span>
+        </div>
+        <div class="metric-label">Daily Limit</div>
+      </div>
+    </div>
+
+    <!-- Usage progress bar -->
+    <div class="card usage-bar-wrap">
+      <div class="card-title">Daily usage</div>
+      <div class="usage-bar-header">
+        <span id="usage-label">0% used</span>
+        <span id="usage-remaining">100 L remaining</span>
+      </div>
+      <div class="usage-bar-track">
+        <div class="usage-bar-fill" id="usage-bar" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Event log -->
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <div class="card-title" style="margin-bottom:0">Event log</div>
+        <button class="btn btn-ghost" id="btn-clear-log" style="font-size:11px; padding:4px 10px;">
+          Clear
+        </button>
+      </div>
+      <div class="event-log" id="event-log"></div>
+    </div>
+
+    <!-- Manual refresh button -->
+    <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+      <button class="btn btn-ghost" id="btn-refresh">↻ Refresh now</button>
+    </div>
+
+  </section>
+
+  <!-- ======================================================================
+       TAB 2 — SENSORS
+       Shows connection and reading status for all sensors.
+       Sensors not yet connected show a "Not connected" message.
+       ====================================================================== -->
+  <section class="tab-panel" id="tab-sensors" role="tabpanel">
+
+    <!-- Moisture nodes -->
+    <div class="card">
+      <div class="card-title">Moisture sensor nodes</div>
+      <div class="sensor-grid" id="moisture-nodes-grid">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+
+    <!-- Acoustic sensor -->
+    <div class="card">
+      <div class="card-title">Acoustic / vibration sensor</div>
+      <div class="sensor-grid" id="acoustic-sensor-grid">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+
+    <!-- Flow sensor (always part of the system) -->
+    <div class="card">
+      <div class="card-title">Ultrasonic flow sensor</div>
+      <div class="sensor-grid">
+        <div class="sensor-card">
+          <div class="sensor-card-name">TDC1000 / TDC7200</div>
+          <div class="sensor-status ok" id="flow-sensor-status">Reading</div>
+          <div style="font-size:11px; color:var(--text-dim); margin-top:6px;">
+            <span id="flow-sensor-detail">— L/min</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ======================================================================
+       TAB 3 — TEST MODE
+       Allows the user to inject dummy sensor values to verify the
+       dashboard behavior without affecting real sensor data.
+       ====================================================================== -->
+  <section class="tab-panel" id="tab-test" role="tabpanel">
+
+    <!-- Mode toggle -->
+    <div class="card">
+      <div class="card-title">Mode</div>
+      <p style="font-size:13px; color:var(--text-dim); margin-bottom:14px;">
+        In test mode, all dashboard values come from the dummy data you set
+        below. Real sensor data is preserved and unaffected.
+      </p>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-warning" id="btn-enter-test">Enter test mode</button>
+        <button class="btn btn-ghost"   id="btn-exit-test">Back to live data</button>
+      </div>
+      <div id="mode-feedback" class="feedback"></div>
+    </div>
+
+    <!-- Preset scenarios -->
+    <div class="card">
+      <div class="card-title">Preset scenarios</div>
+      <p style="font-size:13px; color:var(--text-dim); margin-bottom:4px;">
+        Apply a preset to quickly test a specific system condition.
+      </p>
+      <div class="scenario-grid" id="scenario-grid">
+        <!-- Populated by JS from /api/test/scenarios -->
+      </div>
+    </div>
+
+    <!-- Manual dummy value inputs -->
+    <div class="card">
+      <div class="card-title">Manual inputs</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label" for="input-flow-rate">Flow rate (L/min)</label>
+          <input class="form-input" type="number" id="input-flow-rate"
+                 min="0" step="0.1" value="0" />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="input-daily-total">Daily total (L)</label>
+          <input class="form-input" type="number" id="input-daily-total"
+                 min="0" step="1" value="0" />
+        </div>
+      </div>
+
+      <!-- Node checkboxes -->
+      <div style="margin-bottom:12px;">
+        <div class="form-label">Moisture nodes</div>
+        <div class="toggle-row">
+          <input type="checkbox" id="chk-n1-connected" />
+          <label class="toggle-label" for="chk-n1-connected">Node 1 connected</label>
+          <input type="checkbox" id="chk-n1-wet" style="margin-left:16px;" />
+          <label class="toggle-label" for="chk-n1-wet">Node 1 wet</label>
+        </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="chk-n2-connected" />
+          <label class="toggle-label" for="chk-n2-connected">Node 2 connected</label>
+          <input type="checkbox" id="chk-n2-wet" style="margin-left:16px;" />
+          <label class="toggle-label" for="chk-n2-wet">Node 2 wet</label>
+        </div>
+      </div>
+
+      <!-- Acoustic sensor checkboxes -->
+      <div style="margin-bottom:12px;">
+        <div class="form-label">Acoustic sensor</div>
+        <div class="toggle-row">
+          <input type="checkbox" id="chk-ac-connected" />
+          <label class="toggle-label" for="chk-ac-connected">Connected</label>
+          <input type="checkbox" id="chk-ac-anomaly" style="margin-left:16px;" />
+          <label class="toggle-label" for="chk-ac-anomaly">Anomaly detected</label>
+        </div>
+        <div class="form-group" style="margin-top:8px;">
+          <label class="form-label" for="input-ac-rms">Signal RMS amplitude</label>
+          <input class="form-input" type="number" id="input-ac-rms"
+                 min="0" step="0.01" value="0" />
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-apply-manual">Apply values</button>
+        <button class="btn btn-ghost"   id="btn-reset-test">Reset to defaults</button>
+      </div>
+      <div id="test-feedback" class="feedback"></div>
+    </div>
+
+  </section>
+
+  <!-- ======================================================================
+       TAB 4 — SETTINGS
+       ====================================================================== -->
+  <section class="tab-panel" id="tab-settings" role="tabpanel">
+    <div class="card">
+      <div class="card-title">Usage limits</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label" for="setting-limit">Daily usage limit (L)</label>
+          <input class="form-input" type="number" id="setting-limit"
+                 min="1" step="1" value="100" />
+          <div class="form-hint">Set to 0 to disable the limit.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="setting-warn-pct">Warning threshold (%)</label>
+          <input class="form-input" type="number" id="setting-warn-pct"
+                 min="1" max="99" step="1" value="80" />
+          <div class="form-hint">
+            Show a warning when usage reaches this % of the daily limit.
+          </div>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-save-settings">Save settings</button>
+      </div>
+      <div id="settings-feedback" class="feedback"></div>
+    </div>
+  </section>
+
+</div><!-- /.app-shell -->
+
+<script src="/static/dashboard.js"></script>
+
+</body>
+</html>
