@@ -23,6 +23,7 @@
       --green:        #43e97b;       /* normal state                     */
       --yellow:       #f9c74f;       /* warning state                    */
       --red:          #f94144;       /* leak alarm / abnormal state      */
+      --deep-red:     #ff2d55;       /* confirmed leak, escalated state  */
       --font-mono:    "JetBrains Mono", "Fira Mono", "Consolas", monospace;
       --font-body:    "Inter", "Segoe UI", system-ui, sans-serif;
       --radius:       8px;
@@ -233,6 +234,7 @@
     .state-badge.warning  { background: #2e2310; color: var(--yellow); }
     .state-badge.leak_alarm  { background: #2e0f10; color: var(--red); }
     .state-badge.abnormal { background: #2e0f10; color: var(--red); }
+    .state-badge.confirmed_leak { background: #34001a; color: var(--deep-red); }
 
     .state-dot {
       width:         8px;
@@ -245,6 +247,12 @@
     .state-badge.leak_alarm .state-dot,
     .state-badge.abnormal .state-dot {
       animation: pulse 1s infinite;
+    }
+
+    /* Confirmed leak pulses faster and harder, since it is more urgent
+       than a fresh leak_alarm reading. */
+    .state-badge.confirmed_leak .state-dot {
+      animation: pulse 0.5s infinite;
     }
 
     @keyframes pulse {
@@ -506,6 +514,7 @@
     <button class="tab-btn"        data-tab="sensors"    role="tab">Sensors</button>
     <button class="tab-btn"        data-tab="test"  role="tab">Test Mode</button>
     <button class="tab-btn"        data-tab="settings"   role="tab">Settings</button>
+    <button class="tab-btn"        data-tab="system"     role="tab">System</button>
   </nav>
 
   <!-- ======================================================================
@@ -568,6 +577,38 @@
       </div>
     </div>
 
+    <!-- Analytics: rolling average, eco score, streak -->
+    <div class="card">
+      <div class="card-title">7-day analytics</div>
+      <div class="metrics-grid">
+        <div class="metric">
+          <div class="metric-value">
+            <span id="analytics-avg">0.0</span>
+            <span class="metric-unit">L/day</span>
+          </div>
+          <div class="metric-label">7-day average</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">
+            <span id="analytics-eco">0</span>
+            <span class="metric-unit">/ 100</span>
+          </div>
+          <div class="metric-label">Eco score</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">
+            <span id="analytics-streak">0</span>
+            <span class="metric-unit">days</span>
+          </div>
+          <div class="metric-label">Under-limit streak</div>
+        </div>
+      </div>
+      <div class="card-title" style="margin-top:16px;">Usage history</div>
+      <div id="history-list" style="font-size:12px; color:var(--text-dim);">
+        No archived days yet. History fills in after the first midnight rollover.
+      </div>
+    </div>
+
     <!-- Event log -->
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
@@ -598,6 +639,9 @@
       <div class="card-title">Moisture sensor nodes</div>
       <div class="sensor-grid" id="moisture-nodes-grid">
         <!-- Populated by JS -->
+      </div>
+      <div style="font-size:11px; color:var(--text-dim); margin-top:10px;">
+        ESP-NOW receiver: <span id="espnow-status">checking...</span>
       </div>
     </div>
 
@@ -737,11 +781,90 @@
           </div>
         </div>
       </div>
+      <div class="card-title" style="margin-top:16px;">Leak confirmation</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label" for="setting-confirm-sec">Confirmation window (seconds)</label>
+          <input class="form-input" type="number" id="setting-confirm-sec"
+                 min="1" step="1" value="300" />
+          <div class="form-hint">
+            How long a moisture sensor must stay continuously wet before
+            leak_alarm escalates to confirmed_leak.
+          </div>
+        </div>
+      </div>
       <div class="btn-row">
         <button class="btn btn-primary" id="btn-save-settings">Save settings</button>
       </div>
       <div id="settings-feedback" class="feedback"></div>
     </div>
+  </section>
+
+  <!-- ======================================================================
+       TAB 5 - SYSTEM
+       Clock sync, cloud logging, and firmware update status. These are
+       all backend features with no hardware dependency, so they work the
+       same on the ESP32 and on the PC test server.
+       ====================================================================== -->
+  <section class="tab-panel" id="tab-system" role="tabpanel">
+
+    <!-- Clock sync -->
+    <div class="card">
+      <div class="card-title">Clock sync</div>
+      <p style="font-size:13px; color:var(--text-dim); margin-bottom:10px;">
+        <span id="time-source">-</span>, last synced
+        <span id="time-last-sync">never</span>.
+      </p>
+      <div class="btn-row" style="margin-top:0;">
+        <button class="btn btn-primary" id="btn-time-sync">Sync now</button>
+      </div>
+      <div id="time-feedback" class="feedback"></div>
+    </div>
+
+    <!-- Cloud logging (ThingSpeak) -->
+    <div class="card">
+      <div class="card-title">Cloud logging (ThingSpeak)</div>
+      <div class="toggle-row">
+        <input type="checkbox" id="chk-cloud-enabled" />
+        <label class="toggle-label" for="chk-cloud-enabled">Enable cloud logging</label>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label" for="input-cloud-key">ThingSpeak API key</label>
+          <input class="form-input" type="text" id="input-cloud-key" value="" />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="input-cloud-interval">Push interval (seconds)</label>
+          <input class="form-input" type="number" id="input-cloud-interval"
+                 min="1" step="1" value="60" />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-cloud-save">Save cloud settings</button>
+        <button class="btn btn-ghost"   id="btn-cloud-push">Push now</button>
+      </div>
+      <div id="cloud-feedback" class="feedback"></div>
+    </div>
+
+    <!-- OTA firmware updates -->
+    <div class="card">
+      <div class="card-title">Firmware updates</div>
+      <p style="font-size:13px; color:var(--text-dim); margin-bottom:10px;">
+        Installed version: <span id="ota-current-version">-</span>
+      </p>
+      <div class="form-group">
+        <label class="form-label" for="input-ota-manifest">Manifest URL</label>
+        <input class="form-input" type="text" id="input-ota-manifest"
+               placeholder="https://example.com/fw/manifest.json" />
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-ota-check">Check for update</button>
+        <button class="btn btn-warning" id="btn-ota-apply" disabled>Apply update</button>
+        <button class="btn btn-danger"  id="btn-ota-reboot" disabled>Reboot</button>
+      </div>
+      <div id="ota-feedback" class="feedback"></div>
+    </div>
+
   </section>
 
 </div><!-- /.app-shell -->

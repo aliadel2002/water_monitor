@@ -7,15 +7,21 @@
 # logic "what does this sensor data mean?" lives.
 #
 # States (in order of priority, highest first):
-#   "leak_alarm"  — one or more moisture nodes are wet
-#   "abnormal"    — flow detected with no expected usage AND acoustic anomaly
-#   "warning"     — daily usage has crossed the warning threshold percentage
-#   "normal"      — everything is within expected parameters
+#   "confirmed_leak" — a moisture node has been continuously wet for at
+#                       least confirmed_leak_threshold_sec seconds
+#   "leak_alarm"      — one or more moisture nodes are wet, but not yet
+#                        long enough to count as confirmed
+#   "abnormal"        — flow detected with no expected usage AND acoustic
+#                        anomaly
+#   "warning"         — daily usage has crossed the warning threshold
+#                        percentage
+#   "normal"          — everything is within expected parameters
 #
 # The classifier is called periodically by the server's background task,
 # not on every sensor read, to keep CPU usage low.
 # =============================================================================
 
+import clock
 import event_log
 import sensor_state
 import settings
@@ -24,6 +30,11 @@ import settings
 # Track the previous state separately for each mode so switching between
 # real and test mode does not trigger false state-change log entries
 _previous_state = {"real": "normal", "test": "normal"}
+
+# Track when each mode's moisture nodes first became wet, so we can tell
+# how long the leak has been continuously active. None means "currently
+# dry, no leak timer running".
+_leak_start_time = {"real": None, "test": None}
 
 
 def classify():
@@ -43,33 +54,45 @@ def classify():
     daily  = state["daily_total_litres"]
     limit  = cfg["daily_limit_litres"]
     thresh = cfg["warning_threshold_pct"]
+    confirm_after = cfg["confirmed_leak_threshold_sec"]
 
-    # ------------------------------------------------------------------
-    # Priority 1: Leak alarm
-    # ------------------------------------------------------------------
     wet_nodes = [name for name, n in nodes.items() if n.get("wet")]
+
+    # ------------------------------------------------------------------
+    # Priority 1 and 2: leak alarm, escalating to confirmed leak
+    # ------------------------------------------------------------------
     if wet_nodes:
-        new_state = "leak_alarm"
+        if _leak_start_time[mode] is None:
+            _leak_start_time[mode] = clock.now()
 
-    # ------------------------------------------------------------------
-    # Priority 2: Abnormal usage
-    # ------------------------------------------------------------------
-    elif (state["flow_rate_lpm"] > 0
-          and state["acoustic_sensor"]["connected"]
-          and state["acoustic_sensor"]["anomaly"]):
-        new_state = "abnormal"
-
-    # ------------------------------------------------------------------
-    # Priority 3: Warning
-    # ------------------------------------------------------------------
-    elif limit > 0 and (daily / limit * 100) >= thresh:
-        new_state = "warning"
-
-    # ------------------------------------------------------------------
-    # Priority 4: Normal
-    # ------------------------------------------------------------------
+        wet_duration = clock.now() - _leak_start_time[mode]
+        if wet_duration >= confirm_after:
+            new_state = "confirmed_leak"
+        else:
+            new_state = "leak_alarm"
     else:
-        new_state = "normal"
+        # Nodes are dry, so any in-progress leak timer stops.
+        _leak_start_time[mode] = None
+
+        # ------------------------------------------------------------------
+        # Priority 3: Abnormal usage
+        # ------------------------------------------------------------------
+        if (state["flow_rate_lpm"] > 0
+                and state["acoustic_sensor"]["connected"]
+                and state["acoustic_sensor"]["anomaly"]):
+            new_state = "abnormal"
+
+        # ------------------------------------------------------------------
+        # Priority 4: Warning
+        # ------------------------------------------------------------------
+        elif limit > 0 and (daily / limit * 100) >= thresh:
+            new_state = "warning"
+
+        # ------------------------------------------------------------------
+        # Priority 5: Normal
+        # ------------------------------------------------------------------
+        else:
+            new_state = "normal"
 
     # ------------------------------------------------------------------
     # Log only when the state changes within the current mode
@@ -87,6 +110,22 @@ def classify():
     return new_state
 
 
+def reset_leak_timer(mode=None):
+    """
+    Clear the leak timer for a mode, so the next wet reading starts a
+    fresh countdown toward confirmed_leak. Called by the alarm reset
+    endpoint after a manual reset, so a resolved leak does not
+    immediately re-escalate using the old start time.
+
+    Args:
+        mode (str, optional): "real" or "test". If not given, clears the
+                               timer for the currently active mode.
+    """
+    if mode is None:
+        mode = sensor_state.get_mode()
+    _leak_start_time[mode] = None
+
+
 def _log_transition(old_state, new_state, wet_nodes):
     """
     Log a human-readable message describing the state change.
@@ -96,20 +135,25 @@ def _log_transition(old_state, new_state, wet_nodes):
         new_state (str): new system state
         wet_nodes (list): list of node names that are currently wet
     """
-    if new_state == "leak_alarm":
+    if new_state == "confirmed_leak":
         node_str = ", ".join(wet_nodes)
         event_log.add_event(
-            f"Leak alarm triggered — wet sensor(s): {node_str}"
+            "Leak confirmed, sensor(s) {} have stayed wet past the confirmation window".format(node_str)
+        )
+    elif new_state == "leak_alarm":
+        node_str = ", ".join(wet_nodes)
+        event_log.add_event(
+            "Leak alarm triggered, wet sensor(s): {}".format(node_str)
         )
     elif new_state == "abnormal":
         event_log.add_event(
-            "Abnormal flow detected — acoustic anomaly while flow is active"
+            "Abnormal flow detected, acoustic anomaly while flow is active"
         )
     elif new_state == "warning":
         event_log.add_event(
-            "Usage warning — approaching daily limit"
+            "Usage warning, approaching daily limit"
         )
     elif new_state == "normal" and old_state != "normal":
         event_log.add_event(
-            f"System returned to normal (was: {old_state})"
+            "System returned to normal (was: {})".format(old_state)
         )

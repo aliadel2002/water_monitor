@@ -6,14 +6,15 @@
 // Sections:
 //   1. Tab navigation
 //   2. API helpers
-//   3. State rendering — update the DOM from a state payload
+//   3. State rendering - update the DOM from a state payload
 //   4. Event log rendering
 //   5. Polling loop - fetch /api/state every 3 seconds
-//   6. Dashboard tab — alarm reset, manual refresh
-//   7. Sensors tab — rendering helper
-//   8. Test mode tab — mode switch, scenario loader, manual input apply
-//   9. Settings tab — save settings
-//  10. Init — run on page load
+//   6. Dashboard tab - alarm reset, manual refresh
+//   7. Sensors tab - rendering helper
+//   8. Test mode tab - mode switch, scenario loader, manual input apply
+//   9. Settings tab - save settings
+//  10. System tab - time sync, cloud logging, OTA updates
+//  11. Init - run on page load
 // ============================================================================
 
 
@@ -94,20 +95,22 @@ function showFeedback(id, msg, ok) {
  * Map a system_state string to a human-readable description.
  */
 const STATE_DESCRIPTIONS = {
-  normal:     "All sensors reading normal. No leaks detected.",
-  warning:    "Usage is approaching the daily limit. Consider reducing water use.",
-  abnormal:   "Abnormal flow detected. Acoustic sensor indicates a possible hidden leak.",
-  leak_alarm: "Leak alarm — a moisture sensor has detected water. Check the location immediately.",
+  normal:         "All sensors reading normal. No leaks detected.",
+  warning:        "Usage is approaching the daily limit. Consider reducing water use.",
+  abnormal:       "Abnormal flow detected. Acoustic sensor indicates a possible hidden leak.",
+  leak_alarm:     "Leak alarm - a moisture sensor has detected water. Check the location immediately.",
+  confirmed_leak: "Leak confirmed - water has been detected continuously past the confirmation window. Treat this as an active leak.",
 };
 
 /**
  * Map a system_state string to a display label.
  */
 const STATE_LABELS = {
-  normal:     "Normal",
-  warning:    "Warning",
-  abnormal:   "Abnormal flow",
-  leak_alarm: "Leak alarm",
+  normal:         "Normal",
+  warning:        "Warning",
+  abnormal:       "Abnormal flow",
+  leak_alarm:     "Leak alarm",
+  confirmed_leak: "Leak confirmed",
 };
 
 /**
@@ -130,9 +133,10 @@ function renderState(s) {
   document.getElementById("state-description").textContent =
     STATE_DESCRIPTIONS[s.system_state] || "";
 
-  // --- Alarm reset button — only visible in leak_alarm state ---
+  // --- Alarm reset button, visible in leak_alarm and confirmed_leak ---
   document.getElementById("alarm-actions").style.display =
-    s.system_state === "leak_alarm" ? "block" : "none";
+    (s.system_state === "leak_alarm" || s.system_state === "confirmed_leak")
+      ? "block" : "none";
 
   // --- Flow and usage metrics ---
   document.getElementById("flow-rate").textContent    = s.flow_rate_lpm.toFixed(1);
@@ -160,6 +164,34 @@ function renderState(s) {
   // --- Sync settings inputs if they have not been changed by the user ---
   document.getElementById("daily-limit-display").textContent =
     s.daily_limit_litres.toFixed(0);
+}
+
+/**
+ * Render the 7-day analytics card (rolling average, eco score, streak)
+ * and the archived usage history list.
+ *
+ * @param {object} a - parsed JSON from GET /api/analytics
+ * @param {Array}  h - parsed JSON from GET /api/history
+ */
+function renderAnalytics(a, h) {
+  document.getElementById("analytics-avg").textContent    = a.rolling_average_litres.toFixed(1);
+  document.getElementById("analytics-eco").textContent    = a.eco_score;
+  document.getElementById("analytics-streak").textContent = a.streak_days;
+
+  const list = document.getElementById("history-list");
+  if (!h || h.length === 0) {
+    list.textContent = "No archived days yet. History fills in after the first midnight rollover.";
+    return;
+  }
+
+  // Show the most recent entries first, newest at the top.
+  const rows = h.slice().reverse().map(entry =>
+    `<div style="display:flex; justify-content:space-between; padding:3px 0;">
+       <span>${escapeHtml(entry.date)}</span>
+       <span>${entry.total_litres.toFixed(1)} L</span>
+     </div>`
+  );
+  list.innerHTML = rows.join("");
 }
 
 
@@ -241,9 +273,47 @@ async function poll() {
   }
 }
 
+/**
+ * Fetch and render the analytics card and usage history. These only
+ * change once a day at most (when the daily rollover happens), so this
+ * runs far less often than the main state poll rather than on the same
+ * 3 second interval.
+ */
+async function pollAnalytics() {
+  try {
+    const [analyticsData, history, espnowStatus] = await Promise.all([
+      apiGet("/api/analytics"),
+      apiGet("/api/history"),
+      apiGet("/api/espnow/status"),
+    ]);
+    renderAnalytics(analyticsData, history);
+    renderEspnowStatus(espnowStatus);
+  } catch (err) {
+    console.warn("[pollAnalytics] Failed to reach server:", err.message);
+  }
+}
+
+/**
+ * Render the ESP-NOW receiver status line on the Sensors tab.
+ *
+ * @param {object} status - parsed JSON from GET /api/espnow/status
+ */
+function renderEspnowStatus(status) {
+  const el = document.getElementById("espnow-status");
+  if (!status.available) {
+    el.textContent = "not available on this platform";
+  } else if (status.active) {
+    el.textContent = "active, listening for " + status.known_nodes.join(", ");
+  } else {
+    el.textContent = "available but not yet initialized";
+  }
+}
+
 function startPolling() {
   poll(); // run immediately on load
+  pollAnalytics();
   _pollingInterval = setInterval(poll, 3000);
+  setInterval(pollAnalytics, 60000);
 }
 
 
@@ -442,21 +512,24 @@ document.getElementById("btn-reset-test").addEventListener("click", async () => 
 async function loadSettings() {
   try {
     const cfg = await apiGet("/api/settings");
-    document.getElementById("setting-limit").value    = cfg.daily_limit_litres;
-    document.getElementById("setting-warn-pct").value = cfg.warning_threshold_pct;
+    document.getElementById("setting-limit").value        = cfg.daily_limit_litres;
+    document.getElementById("setting-warn-pct").value     = cfg.warning_threshold_pct;
+    document.getElementById("setting-confirm-sec").value  = cfg.confirmed_leak_threshold_sec;
   } catch (err) {
     console.warn("Could not load settings:", err.message);
   }
 }
 
 document.getElementById("btn-save-settings").addEventListener("click", async () => {
-  const limit   = parseFloat(document.getElementById("setting-limit").value);
-  const warnPct = parseFloat(document.getElementById("setting-warn-pct").value);
+  const limit      = parseFloat(document.getElementById("setting-limit").value);
+  const warnPct    = parseFloat(document.getElementById("setting-warn-pct").value);
+  const confirmSec = parseFloat(document.getElementById("setting-confirm-sec").value);
 
   try {
     await apiPost("/api/settings", {
-      daily_limit_litres:   limit,
-      warning_threshold_pct: warnPct,
+      daily_limit_litres:            limit,
+      warning_threshold_pct:         warnPct,
+      confirmed_leak_threshold_sec:  confirmSec,
     });
     showFeedback("settings-feedback", "Settings saved.", true);
     poll(); // refresh the usage bar to reflect the new limit
@@ -467,11 +540,139 @@ document.getElementById("btn-save-settings").addEventListener("click", async () 
 
 
 // ============================================================================
-// 10. INIT — runs once on page load
+// 10. SYSTEM TAB — time sync, cloud logging, OTA updates
+// ============================================================================
+
+/** Populate the clock sync display from the server. */
+async function loadTimeStatus() {
+  try {
+    const status = await apiGet("/api/time/status");
+    document.getElementById("time-source").textContent =
+      status.source === "ntp" ? "Synced via NTP" : "Using system clock";
+    document.getElementById("time-last-sync").textContent =
+      status.last_sync_time ? new Date(status.last_sync_time * 1000).toLocaleString() : "never";
+  } catch (err) {
+    console.warn("Could not load time status:", err.message);
+  }
+}
+
+document.getElementById("btn-time-sync").addEventListener("click", async () => {
+  try {
+    await apiPost("/api/time/sync", {});
+    showFeedback("time-feedback", "Clock synced.", true);
+    loadTimeStatus();
+  } catch (err) {
+    showFeedback("time-feedback", err.message, false);
+  }
+});
+
+/** Populate the cloud logging inputs from the server. */
+async function loadCloudSettings() {
+  try {
+    const cfg = await apiGet("/api/cloud/status");
+    document.getElementById("chk-cloud-enabled").checked  = cfg.enabled;
+    document.getElementById("input-cloud-key").value      = cfg.api_key;
+    document.getElementById("input-cloud-interval").value = cfg.update_interval_sec;
+  } catch (err) {
+    console.warn("Could not load cloud settings:", err.message);
+  }
+}
+
+document.getElementById("btn-cloud-save").addEventListener("click", async () => {
+  const enabled  = document.getElementById("chk-cloud-enabled").checked;
+  const apiKey   = document.getElementById("input-cloud-key").value.trim();
+  const interval = parseFloat(document.getElementById("input-cloud-interval").value);
+
+  try {
+    await apiPost("/api/cloud/settings", {
+      enabled:              enabled,
+      api_key:              apiKey,
+      update_interval_sec:  interval,
+    });
+    showFeedback("cloud-feedback", "Cloud logging settings saved.", true);
+  } catch (err) {
+    showFeedback("cloud-feedback", err.message, false);
+  }
+});
+
+document.getElementById("btn-cloud-push").addEventListener("click", async () => {
+  try {
+    const res = await apiPost("/api/cloud/push", {});
+    if (res.sent) {
+      showFeedback("cloud-feedback", "Push sent to ThingSpeak.", true);
+    } else {
+      showFeedback("cloud-feedback", "Not sent: " + res.reason, false);
+    }
+  } catch (err) {
+    showFeedback("cloud-feedback", err.message, false);
+  }
+});
+
+/** Populate the firmware version display from the server. */
+async function loadOtaStatus() {
+  try {
+    const status = await apiGet("/api/ota/status");
+    document.getElementById("ota-current-version").textContent = status.current_version;
+    document.getElementById("btn-ota-apply").disabled = !status.update_available;
+  } catch (err) {
+    console.warn("Could not load OTA status:", err.message);
+  }
+}
+
+document.getElementById("btn-ota-check").addEventListener("click", async () => {
+  const manifestUrl = document.getElementById("input-ota-manifest").value.trim();
+  if (!manifestUrl) {
+    showFeedback("ota-feedback", "Enter a manifest URL first.", false);
+    return;
+  }
+
+  try {
+    const res = await apiPost("/api/ota/check", { manifest_url: manifestUrl });
+    document.getElementById("btn-ota-apply").disabled = !res.update_available;
+    if (res.update_available) {
+      showFeedback("ota-feedback",
+        `Update available: ${res.current_version} -> ${res.candidate_version}`, true);
+    } else {
+      showFeedback("ota-feedback",
+        `Already up to date (${res.current_version}).`, true);
+    }
+  } catch (err) {
+    showFeedback("ota-feedback", err.message, false);
+  }
+});
+
+document.getElementById("btn-ota-apply").addEventListener("click", async () => {
+  try {
+    const res = await apiPost("/api/ota/apply", {});
+    showFeedback("ota-feedback",
+      "Update applied. Files written: " + res.files_written.join(", "), true);
+    document.getElementById("btn-ota-apply").disabled  = true;
+    document.getElementById("btn-ota-reboot").disabled = false;
+    loadOtaStatus();
+  } catch (err) {
+    showFeedback("ota-feedback", err.message, false);
+  }
+});
+
+document.getElementById("btn-ota-reboot").addEventListener("click", async () => {
+  try {
+    await apiPost("/api/ota/reboot", {});
+    showFeedback("ota-feedback", "Reboot requested.", true);
+  } catch (err) {
+    showFeedback("ota-feedback", err.message, false);
+  }
+});
+
+
+// ============================================================================
+// 11. INIT — runs once on page load
 // ============================================================================
 
 (async function init() {
   await loadSettings();
   await loadScenarios();
+  await loadTimeStatus();
+  await loadCloudSettings();
+  await loadOtaStatus();
   startPolling();
 })();

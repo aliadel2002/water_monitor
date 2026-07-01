@@ -3,9 +3,14 @@
 # In-memory event log for the monitoring system.
 #
 # Events are stored as a list of dictionaries. Each entry has a message
-# and a sequence number. Timestamps are NOT added here — they are added
-# by the browser using the client's local clock when the event arrives
-# over WebSocket. This avoids needing NTP or RTC setup on the ESP32.
+# and a sequence number. Timestamps are NOT added here. The dashboard
+# polls GET /api/events every 3 seconds and stamps each event with the
+# browser's local clock when it renders it. There is no WebSocket
+# connection in this system, only plain polling over fetch(). Keeping
+# timestamps out of the server avoided needing NTP or RTC setup early on;
+# now that ntp_sync.py exists, the server does know the correct time, but
+# events are still left unstamped here so the dashboard's display logic
+# does not need to change.
 #
 # The log is capped at MAX_ENTRIES to prevent unbounded memory growth.
 # When the cap is reached, the oldest entry is dropped.

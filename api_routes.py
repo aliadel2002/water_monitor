@@ -3,15 +3,27 @@
 # All REST API route handlers for the web dashboard.
 #
 # Routes are grouped by function:
-#   /api/state          — current sensor readings and system state (GET)
-#   /api/settings       — read and update user settings (GET / POST)
-#   /api/reset-alarm    — reset a leak alarm if sensors are dry (POST)
-#   /api/mode           — switch between real and test mode (GET / POST)
-#   /api/test/update    — update individual test state values (POST)
-#   /api/test/scenario  — apply a preset test scenario (POST)
-#   /api/test/reset     — reset test state to defaults (POST)
-#   /api/events         — retrieve the event log (GET)
-#   /api/events/clear   — clear the event log (POST)
+#   /api/state          - current sensor readings and system state (GET)
+#   /api/settings       - read and update user settings (GET / POST)
+#   /api/reset-alarm    - reset a leak alarm if sensors are dry (POST)
+#   /api/mode           - switch between real and test mode (GET / POST)
+#   /api/test/update    - update individual test state values (POST)
+#   /api/test/scenario  - apply a preset test scenario (POST)
+#   /api/test/reset     - reset test state to defaults (POST)
+#   /api/events         - retrieve the event log (GET)
+#   /api/events/clear   - clear the event log (POST)
+#   /api/history        - retrieve archived daily usage totals (GET)
+#   /api/analytics      - rolling average, eco score, and streak (GET)
+#   /api/time/status    - current clock sync status (GET)
+#   /api/time/sync      - manually trigger a clock sync (POST)
+#   /api/cloud/status   - ThingSpeak configuration and availability (GET)
+#   /api/cloud/settings - update ThingSpeak configuration (POST)
+#   /api/cloud/push     - manually push one update to ThingSpeak (POST)
+#   /api/ota/status     - current firmware version (GET)
+#   /api/ota/check      - check a manifest URL for a newer version (POST)
+#   /api/ota/apply      - download and apply a checked update (POST)
+#   /api/ota/reboot     - restart the device after an applied update (POST)
+#   /api/espnow/status  - ESP-NOW receiver availability and status (GET)
 #
 # Each handler is a plain function that accepts a MicroDot Request object
 # and returns a tuple of (body, status_code, headers).
@@ -22,6 +34,12 @@ import event_log
 import sensor_state
 import settings
 import classification
+import daily_history
+import analytics
+import ntp_sync
+import thingspeak
+import ota
+import espnow_receiver
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +118,12 @@ def handle_post_settings(request):
         if not isinstance(val, (int, float)) or not (1 <= val <= 99):
             return json.dumps({"error": "warning_threshold_pct must be between 1 and 99"}), 400, JSON_HEADERS
 
+    # Validate confirmed leak threshold
+    if "confirmed_leak_threshold_sec" in body:
+        val = body["confirmed_leak_threshold_sec"]
+        if not isinstance(val, (int, float)) or val <= 0:
+            return json.dumps({"error": "confirmed_leak_threshold_sec must be a positive number"}), 400, JSON_HEADERS
+
     updated = settings.update_settings(body)
     event_log.add_event(
         f"Settings updated: limit={updated['daily_limit_litres']} L, "
@@ -115,10 +139,14 @@ def handle_post_settings(request):
 def handle_reset_alarm(request):
     """
     POST /api/reset-alarm
-    Reset the system state from 'leak_alarm' back to 'normal'.
-    Only allowed if all moisture sensor nodes are currently reading dry.
-    This mirrors the hardware safety rule: you cannot clear an alarm
-    while the triggering sensor is still wet.
+    Reset the system state from 'leak_alarm' or 'confirmed_leak' back to
+    'normal'. Only allowed if all moisture sensor nodes are currently
+    reading dry. This mirrors the hardware safety rule: you cannot clear
+    an alarm while the triggering sensor is still wet.
+
+    Also clears the confirmed-leak timer for the active mode, so if the
+    sensor gets wet again later it starts a fresh countdown rather than
+    immediately re-escalating using the old start time.
     """
     state = sensor_state.get_active_state()
     nodes = state["moisture_nodes"]
@@ -130,7 +158,7 @@ def handle_reset_alarm(request):
     ]
 
     if wet_nodes:
-        msg = f"Cannot reset — node(s) still wet: {', '.join(wet_nodes)}"
+        msg = "Cannot reset, node(s) still wet: {}".format(", ".join(wet_nodes))
         return json.dumps({"error": msg}), 409, JSON_HEADERS
 
     # Clear the alarm state
@@ -138,6 +166,8 @@ def handle_reset_alarm(request):
         sensor_state.TEST_STATE["system_state"] = "normal"
     else:
         sensor_state.REAL_STATE["system_state"] = "normal"
+
+    classification.reset_leak_timer()
 
     event_log.add_event("Leak alarm manually reset by user")
     return json.dumps({"status": "ok", "message": "Alarm reset"}), 200, JSON_HEADERS
@@ -181,7 +211,7 @@ def handle_post_mode(request):
 
 
 # ===========================================================================
-# TEST MODE — update individual values
+# TEST MODE , update individual values
 # ===========================================================================
 
 def handle_test_update(request):
@@ -243,7 +273,7 @@ def handle_test_update(request):
 
 
 # ===========================================================================
-# TEST MODE — preset scenarios
+# TEST MODE , preset scenarios
 # ===========================================================================
 
 # Each scenario is a dict of field names matching handle_test_update's
@@ -274,7 +304,7 @@ _SCENARIOS = {
     },
     "leak_node1": {
         "label": "Leak at Node 1",
-        "description": "Node 1 is reporting wet — leak alarm triggered.",
+        "description": "Node 1 is reporting wet , leak alarm triggered.",
         "values": {
             "flow_rate_lpm": 0.0,
             "daily_total_litres": 30.0,
@@ -285,7 +315,7 @@ _SCENARIOS = {
     },
     "leak_node2": {
         "label": "Leak at Node 2",
-        "description": "Node 2 is reporting wet — leak alarm triggered.",
+        "description": "Node 2 is reporting wet , leak alarm triggered.",
         "values": {
             "flow_rate_lpm": 0.0,
             "daily_total_litres": 30.0,
@@ -385,3 +415,201 @@ def handle_clear_events(request):
     """
     event_log.clear_log()
     return json.dumps({"status": "ok"}), 200, JSON_HEADERS
+
+
+# ===========================================================================
+# DAILY HISTORY
+# ===========================================================================
+
+def handle_get_history(request):
+    """
+    GET /api/history
+    Return the archived daily usage totals, oldest first. Each entry is
+    {"date": "YYYY-MM-DD", "total_litres": float}. Today's still-running
+    total is not included, since it is not final yet; use /api/state for
+    the live number.
+    """
+    return json.dumps(daily_history.get_history()), 200, JSON_HEADERS
+
+
+# ===========================================================================
+# ANALYTICS
+# ===========================================================================
+
+def handle_get_analytics(request):
+    """
+    GET /api/analytics
+    Return the rolling 7-day average, the eco score, and the current
+    under-limit streak, all computed from archived daily history.
+    """
+    return json.dumps(analytics.get_summary()), 200, JSON_HEADERS
+
+
+# ===========================================================================
+# TIME SYNC
+# ===========================================================================
+
+def handle_get_time_status(request):
+    """
+    GET /api/time/status
+    Return whether the clock is synced, when it last synced, and whether
+    that sync came from NTP (on the ESP32) or the system clock (on PC).
+    """
+    return json.dumps(ntp_sync.get_status()), 200, JSON_HEADERS
+
+
+def handle_post_time_sync(request):
+    """
+    POST /api/time/sync
+    Manually trigger a clock sync and return the resulting status.
+    """
+    ntp_sync.sync()
+    return json.dumps(ntp_sync.get_status()), 200, JSON_HEADERS
+
+
+# ===========================================================================
+# THINGSPEAK CLOUD LOGGING
+# ===========================================================================
+
+def handle_get_cloud_status(request):
+    """
+    GET /api/cloud/status
+    Return the current ThingSpeak configuration. The API key is included
+    as-is; this project has no user accounts or auth layer, so there is
+    nothing to hide it from that could not already read the config file
+    directly off the device.
+    """
+    return json.dumps(thingspeak.get_config()), 200, JSON_HEADERS
+
+
+def handle_post_cloud_settings(request):
+    """
+    POST /api/cloud/settings
+    Update the ThingSpeak configuration. Expects a JSON body with any
+    combination of: enabled (bool), api_key (string),
+    update_interval_sec (number).
+    """
+    try:
+        body = json.loads(request.body)
+    except Exception:
+        return json.dumps({"error": "Invalid JSON"}), 400, JSON_HEADERS
+
+    if "update_interval_sec" in body:
+        val = body["update_interval_sec"]
+        if not isinstance(val, (int, float)) or val <= 0:
+            return json.dumps({"error": "update_interval_sec must be a positive number"}), 400, JSON_HEADERS
+
+    updated = thingspeak.update_config(body)
+    event_log.add_event("ThingSpeak cloud logging settings updated")
+    return json.dumps(updated), 200, JSON_HEADERS
+
+
+def handle_post_cloud_push(request):
+    """
+    POST /api/cloud/push
+    Manually push the current active state to ThingSpeak right now,
+    rather than waiting for the next scheduled push. Useful for testing
+    a new API key from the dashboard before relying on the background task.
+    """
+    state = sensor_state.get_active_state()
+    result = thingspeak.push_update(state)
+    return json.dumps(result), 200, JSON_HEADERS
+
+
+# ===========================================================================
+# OTA UPDATES
+# ===========================================================================
+
+# Holds the most recently fetched manifest, so a two-step check-then-apply
+# flow from the dashboard does not need to pass the whole manifest back
+# and forth over the API.
+_last_checked_manifest = {"manifest": None}
+
+
+def handle_get_ota_status(request):
+    """
+    GET /api/ota/status
+    Return the currently installed firmware version and whether a newer
+    version was found the last time /api/ota/check was called.
+    """
+    manifest = _last_checked_manifest["manifest"]
+    payload = {
+        "current_version": ota.get_current_version(),
+        "update_available": bool(manifest and ota.is_update_available(manifest)),
+        "candidate_version": manifest.get("version") if manifest else None,
+    }
+    return json.dumps(payload), 200, JSON_HEADERS
+
+
+def handle_post_ota_check(request):
+    """
+    POST /api/ota/check
+    Fetch a manifest from the given URL and check whether it describes a
+    newer version than what is currently installed. Expects JSON body:
+    {"manifest_url": "https://..."}
+    """
+    try:
+        body = json.loads(request.body)
+        manifest_url = body.get("manifest_url")
+    except Exception:
+        return json.dumps({"error": "Invalid JSON"}), 400, JSON_HEADERS
+
+    if not manifest_url:
+        return json.dumps({"error": "manifest_url is required"}), 400, JSON_HEADERS
+
+    manifest = ota.fetch_manifest(manifest_url)
+    if manifest is None:
+        return json.dumps({"error": "Could not fetch or parse manifest"}), 502, JSON_HEADERS
+
+    _last_checked_manifest["manifest"] = manifest
+    payload = {
+        "current_version": ota.get_current_version(),
+        "candidate_version": manifest.get("version"),
+        "update_available": ota.is_update_available(manifest),
+    }
+    return json.dumps(payload), 200, JSON_HEADERS
+
+
+def handle_post_ota_apply(request):
+    """
+    POST /api/ota/apply
+    Download and write every file from the manifest most recently checked
+    with /api/ota/check. Does not reboot automatically, since resetting
+    the device in the middle of sending an HTTP response would cut the
+    response off before the dashboard sees it. Call POST /api/ota/reboot
+    once you have confirmed the response came back with applied: true.
+    """
+    manifest = _last_checked_manifest["manifest"]
+    if manifest is None:
+        return json.dumps({"error": "No manifest has been checked yet. Call /api/ota/check first."}), 400, JSON_HEADERS
+
+    result = ota.apply_update(manifest)
+    if result["applied"]:
+        event_log.add_event("Firmware updated to version {}".format(manifest.get("version")))
+        return json.dumps(result), 200, JSON_HEADERS
+    return json.dumps(result), 502, JSON_HEADERS
+
+
+def handle_post_ota_reboot(request):
+    """
+    POST /api/ota/reboot
+    Restart the device to load newly applied firmware files. On PC this
+    just logs what would happen, since a test server should not actually
+    exit.
+    """
+    ota.reboot()
+    return json.dumps({"status": "ok", "message": "Reboot requested"}), 200, JSON_HEADERS
+
+
+# ===========================================================================
+# ESP-NOW RECEIVER STATUS
+# ===========================================================================
+
+def handle_get_espnow_status(request):
+    """
+    GET /api/espnow/status
+    Return whether the ESP-NOW receiver is available on this platform and,
+    if so, whether it is currently active. available is always False on
+    the PC test server, since there is no real radio to listen on there.
+    """
+    return json.dumps(espnow_receiver.get_status()), 200, JSON_HEADERS
