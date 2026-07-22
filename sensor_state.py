@@ -21,7 +21,9 @@ _DEFAULT_STATE = {
     "daily_total_litres": 0.0,   # Total water used today in litres
 
     # --- System classification ---
-    # Possible values: "normal" | "warning" | "leak_alarm" | "abnormal"
+    # Possible values: "normal" | "abnormal" | "leak_alarm" | "confirmed_leak"
+    # Daily usage warning is surfaced separately via the usage_exceeded field
+    # in /api/state and does NOT change system_state.
     "system_state": "normal",
 
     # --- Moisture sensor nodes ---

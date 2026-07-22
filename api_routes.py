@@ -64,6 +64,12 @@ def handle_get_state(request):
     # Compute usage percentage safely (avoid divide-by-zero)
     limit = cfg["daily_limit_litres"]
     usage_pct = (state["daily_total_litres"] / limit * 100) if limit > 0 else 0
+    warn_thresh = cfg["warning_threshold_pct"]
+
+    # usage_exceeded is independent of system_state — it flags that daily
+    # consumption has crossed the warning threshold so the dashboard can show
+    # a separate banner without affecting the leak/anomaly state machine.
+    usage_exceeded = limit > 0 and usage_pct >= warn_thresh
 
     payload = {
         "mode":              sensor_state.get_mode(),
@@ -72,7 +78,8 @@ def handle_get_state(request):
         "daily_total_litres": state["daily_total_litres"],
         "daily_limit_litres": limit,
         "usage_pct":         round(usage_pct, 1),
-        "warning_threshold_pct": cfg["warning_threshold_pct"],
+        "warning_threshold_pct": warn_thresh,
+        "usage_exceeded":    usage_exceeded,
         "moisture_nodes":    state["moisture_nodes"],
         "acoustic_sensor":   state["acoustic_sensor"],
     }
