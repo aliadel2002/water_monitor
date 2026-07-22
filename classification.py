@@ -13,9 +13,12 @@
 #                        long enough to count as confirmed
 #   "abnormal"        — flow detected with no expected usage AND acoustic
 #                        anomaly
-#   "warning"         — daily usage has crossed the warning threshold
-#                        percentage
 #   "normal"          — everything is within expected parameters
+#
+# NOTE: daily usage exceeding the warning threshold is intentionally NOT
+# a system state. It is surfaced as a separate `usage_exceeded` field in
+# the /api/state response so it can be displayed independently without
+# masking or being masked by real leak/anomaly states.
 #
 # The classifier is called periodically by the server's background task,
 # not on every sensor read, to keep CPU usage low.
@@ -83,13 +86,9 @@ def classify():
             new_state = "abnormal"
 
         # ------------------------------------------------------------------
-        # Priority 4: Warning
-        # ------------------------------------------------------------------
-        elif limit > 0 and (daily / limit * 100) >= thresh:
-            new_state = "warning"
-
-        # ------------------------------------------------------------------
-        # Priority 5: Normal
+        # Priority 4: Normal
+        # (daily usage over limit is reported separately in /api/state as
+        # usage_exceeded and shown as a standalone banner in the dashboard)
         # ------------------------------------------------------------------
         else:
             new_state = "normal"
@@ -148,10 +147,6 @@ def _log_transition(old_state, new_state, wet_nodes):
     elif new_state == "abnormal":
         event_log.add_event(
             "Abnormal flow detected, acoustic anomaly while flow is active"
-        )
-    elif new_state == "warning":
-        event_log.add_event(
-            "Usage warning, approaching daily limit"
         )
     elif new_state == "normal" and old_state != "normal":
         event_log.add_event(

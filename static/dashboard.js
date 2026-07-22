@@ -96,10 +96,9 @@ function showFeedback(id, msg, ok) {
  */
 const STATE_DESCRIPTIONS = {
   normal:         "All sensors reading normal. No leaks detected.",
-  warning:        "Usage is approaching the daily limit. Consider reducing water use.",
   abnormal:       "Abnormal flow detected. Acoustic sensor indicates a possible hidden leak.",
-  leak_alarm:     "Leak alarm - a moisture sensor has detected water. Check the location immediately.",
-  confirmed_leak: "Leak confirmed - water has been detected continuously past the confirmation window. Treat this as an active leak.",
+  leak_alarm:     "Leak alarm \u2014 a moisture sensor has detected water. Check the location immediately.",
+  confirmed_leak: "Leak confirmed \u2014 water has been detected continuously past the confirmation window. Treat this as an active leak.",
 };
 
 /**
@@ -107,7 +106,6 @@ const STATE_DESCRIPTIONS = {
  */
 const STATE_LABELS = {
   normal:         "Normal",
-  warning:        "Warning",
   abnormal:       "Abnormal flow",
   leak_alarm:     "Leak alarm",
   confirmed_leak: "Leak confirmed",
@@ -137,6 +135,19 @@ function renderState(s) {
   document.getElementById("alarm-actions").style.display =
     (s.system_state === "leak_alarm" || s.system_state === "confirmed_leak")
       ? "block" : "none";
+
+  // --- Usage warning banner (independent of system state) ---
+  const banner  = document.getElementById("usage-warning-banner");
+  const bannerMsg = document.getElementById("usage-warning-msg");
+  if (s.usage_exceeded) {
+    const over = s.daily_total_litres > s.daily_limit_litres;
+    bannerMsg.textContent = over
+      ? `Daily limit exceeded: ${s.daily_total_litres.toFixed(1)} L used of ${s.daily_limit_litres.toFixed(0)} L limit (${s.usage_pct.toFixed(1)}%). Reduce usage to stay within budget.`
+      : `Usage at ${s.usage_pct.toFixed(1)}% of daily limit (${s.daily_total_litres.toFixed(1)} L of ${s.daily_limit_litres.toFixed(0)} L). Consider reducing water use.`;
+    banner.classList.add("visible");
+  } else {
+    banner.classList.remove("visible");
+  }
 
   // --- Flow and usage metrics ---
   document.getElementById("flow-rate").textContent    = s.flow_rate_lpm.toFixed(1);

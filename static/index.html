@@ -216,6 +216,57 @@
     .usage-bar-fill.danger  { background: var(--red); }
 
     /* ==========================================================================
+       USAGE WARNING BANNER
+       Shown independently when daily usage exceeds the threshold.
+       Intentionally separate from the system state badge so it can coexist
+       with any leak / anomaly state.
+       ========================================================================== */
+    .usage-warning-banner {
+      display:       none;       /* shown/hidden by JS via renderState() */
+      align-items:   flex-start;
+      gap:           12px;
+      background:    #2a1f08;
+      border:        1px solid var(--yellow);
+      border-radius: var(--radius);
+      padding:       14px 18px;
+      margin-bottom: var(--gap);
+      animation:     banner-in 0.25s ease;
+    }
+
+    .usage-warning-banner.visible { display: flex; }
+
+    @keyframes banner-in {
+      from { opacity: 0; transform: translateY(-6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .usage-warning-icon {
+      font-size:   20px;
+      line-height: 1;
+      flex-shrink: 0;
+      margin-top:  1px;
+    }
+
+    .usage-warning-body {
+      flex: 1;
+    }
+
+    .usage-warning-title {
+      font-family:   var(--font-mono);
+      font-size:     12px;
+      font-weight:   700;
+      color:         var(--yellow);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .usage-warning-msg {
+      font-size: 13px;
+      color:     #e8c97a;
+    }
+
+    /* ==========================================================================
        STATE BADGE
        Colored pill label showing the current system state.
        ========================================================================== */
@@ -231,7 +282,6 @@
     }
 
     .state-badge.normal   { background: #0d2e1a; color: var(--green); }
-    .state-badge.warning  { background: #2e2310; color: var(--yellow); }
     .state-badge.leak_alarm  { background: #2e0f10; color: var(--red); }
     .state-badge.abnormal { background: #2e0f10; color: var(--red); }
     .state-badge.confirmed_leak { background: #34001a; color: var(--deep-red); }
@@ -574,6 +624,17 @@
       </div>
       <div class="usage-bar-track">
         <div class="usage-bar-fill" id="usage-bar" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Daily usage warning banner (shown independently of system state) -->
+    <div class="usage-warning-banner" id="usage-warning-banner" role="alert">
+      <div class="usage-warning-icon">⚠️</div>
+      <div class="usage-warning-body">
+        <div class="usage-warning-title">Daily usage warning</div>
+        <div class="usage-warning-msg" id="usage-warning-msg">
+          Daily usage is approaching the limit.
+        </div>
       </div>
     </div>
 
